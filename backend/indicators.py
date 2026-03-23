@@ -512,7 +512,9 @@ async def _fetch_dxy_change() -> float:
         closes = df["Close"].dropna()
         if len(closes) < 2:
             raise ValueError("Not enough DXY closes")
-        change = (float(closes.iloc[-1]) - float(closes.iloc[-min(5, len(closes) - 1)])) / float(closes.iloc[-min(5, len(closes) - 1)]) * 100
+        _last = _safe_float(closes.iloc[-1], default=0.0)
+        _prev = _safe_float(closes.iloc[-min(5, len(closes) - 1)], default=0.0)
+        change = ((_last - _prev) / _prev * 100) if _prev != 0 else 0.0
         _cache_set("dxy_change", change, 900)  # 15 min TTL
         return change
     except Exception as e:
@@ -912,7 +914,7 @@ async def _fetch_vix() -> float:
             raise ValueError("No VIX data")
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        vix = float(df["Close"].dropna().iloc[-1])
+        vix = _safe_float(df["Close"].dropna().iloc[-1], default=20.0)
         _cache_set("vix", vix, 900)  # 15 min TTL
         return vix
     except Exception as e:

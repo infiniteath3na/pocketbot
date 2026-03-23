@@ -9,7 +9,13 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 logger = logging.getLogger(__name__)
 
-POCKET_WS_URL = "wss://api.po.market/socket.io/?EIO=4&transport=websocket"
+POCKET_WS_REGIONS = [
+    "wss://api-us-north.po.market",
+    "wss://api-us-south.po.market",
+    "wss://api-eu.po.market",
+    "wss://api-asia.po.market",
+]
+SOCKET_PATH = "/socket.io/?EIO=4&transport=websocket"
 MAX_RETRIES = 3
 RETRY_DELAY = 2.0
 
@@ -31,17 +37,21 @@ class PocketOptionClient:
 
     async def connect(self, ssid: str, is_demo: bool = True) -> bool:
         """Connect to PocketOption WebSocket and authenticate."""
+        import os, json as _json
         self.ssid = ssid
         self.is_demo = is_demo
+        uid = int(os.getenv("POCKET_OPTION_UID", "0"))
 
         for attempt in range(1, MAX_RETRIES + 1):
+            region = POCKET_WS_REGIONS[(attempt - 1) % len(POCKET_WS_REGIONS)]
+            url = region + SOCKET_PATH
             try:
-                logger.info(f"Connecting to PocketOption (attempt {attempt}/{MAX_RETRIES})...")
+                logger.info(f"Connecting to PocketOption {region} (attempt {attempt}/{MAX_RETRIES})...")
                 self.ws = await websockets.connect(
-                    POCKET_WS_URL,
-                    extra_headers={
-                        "Origin": "https://pocketoption.com",
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    url,
+                    additional_headers={
+                        "Origin": "https://m.pocketoption.com",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:143.0) Gecko/20100101 Firefox/143.0",
                     },
                     ping_interval=20,
                     ping_timeout=10,
@@ -52,15 +62,33 @@ class PocketOptionClient:
                 handshake = await asyncio.wait_for(self.ws.recv(), timeout=10)
                 logger.debug(f"Handshake: {handshake}")
 
-                # Send auth
+                # Send Socket.IO namespace connect
+                await self.ws.send("40")
+
+                # Wait for namespace ack
+                try:
+                    ack = await asyncio.wait_for(self.ws.recv(), timeout=5)
+                    logger.debug(f"NS ack: {ack}")
+                except asyncio.TimeoutError:
+                    pass
+
+                # Send auth with uid
                 demo_flag = 1 if is_demo else 0
-                auth_msg = f'42["auth",{{"session":"{ssid}","isDemo":{demo_flag}}}]'
+                auth_payload = _json.dumps({
+                    "session": ssid,
+                    "isDemo": demo_flag,
+                    "uid": uid,
+                    "platform": 1,
+                    "isFastHistory": False,
+                    "isOptimized": False,
+                })
+                auth_msg = f'42["auth",{auth_payload}]'
                 await self.ws.send(auth_msg)
                 logger.info("Auth message sent")
 
                 # Wait for auth response
                 auth_response = await asyncio.wait_for(self.ws.recv(), timeout=10)
-                logger.debug(f"Auth response: {auth_response}")
+                logger.debug(f"Auth response: {str(auth_response)[:100]}")
 
                 self.connected = True
                 self.authenticated = True
@@ -102,6 +130,12 @@ class PocketOptionClient:
         while self.connected and self.ws:
             try:
                 message = await self.ws.recv()
+                if isinstance(message, bytes):
+                    try:
+                        await self._handle_message(message.decode("utf-8"))
+                    except Exception:
+                        pass
+                    continue
                 await self._handle_message(message)
             except ConnectionClosed:
                 logger.warning("PocketOption connection closed")
@@ -122,6 +156,40 @@ class PocketOptionClient:
             if message == "3":
                 return
 
+            # Socket.IO binary attachment events start with 451-
+            if message.startswith("451-["):
+                import re as _re
+                m = _re.match(r'451-\["([^"]+)",.*\]', message)
+                # binary payload follows as next message — store event name
+                if m:
+                    self._pending_binary_event = m.group(1)
+                return
+
+            # Handle binary payload for pending event
+            if hasattr(self, "_pending_binary_event") and self._pending_binary_event:
+                event_name = self._pending_binary_event
+                self._pending_binary_event = None
+                try:
+                    import json as _json
+                    event_data = _json.loads(message)
+                    if not isinstance(event_data, dict):
+                        event_data = {"data": event_data}
+                except Exception:
+                    event_data = {}
+                # Re-process as a normal event
+                if event_name == "successauth":
+                    logger.info("Authentication confirmed (binary)")
+                    self.authenticated = True
+                    balance = event_data.get("balance", event_data.get("demo_balance", 0.0))
+                    if isinstance(balance, (int, float)):
+                        self._balance = float(balance)
+                    logger.info(f"Balance from auth: {self._balance}")
+                elif event_name == "updateBalance":
+                    b = event_data.get("balance", self._balance)
+                    if isinstance(b, (int, float)):
+                        self._balance = float(b)
+                return
+
             # Socket.IO event messages start with 42
             if message.startswith("42"):
                 data_str = message[2:]
@@ -132,7 +200,12 @@ class PocketOptionClient:
 
                     if event_name == "successauth":
                         logger.info("Authentication confirmed")
-                        self._balance = event_data.get("balance", 0.0)
+                        self.authenticated = True
+                        self._balance = float(event_data.get("balance", 0.0))
+                        try:
+                            await self.ws.send('42["getBalance",{}]')
+                        except Exception:
+                            pass
 
                     elif event_name == "updateBalance":
                         self._balance = event_data.get("balance", self._balance)
