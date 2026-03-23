@@ -162,9 +162,9 @@ export default function TradeLog({ trades, showFilters = false, limit }: TradeLo
                 <th className="text-left pb-2 pr-4">Dir</th>
                 <th className="text-right pb-2 pr-4">Amount</th>
                 <th className="text-left pb-2 pr-4">Entry Time</th>
-                <th className="text-left pb-2 pr-4">Expiry</th>
+                <th className="text-left pb-2 pr-4">Duration</th>
                 <th className="text-left pb-2 pr-4">Time Left</th>
-                <th className="text-left pb-2 pr-4">Expires At</th>
+                <th className="text-left pb-2 pr-4">Expiry</th>
                 <th className="text-left pb-2 pr-4">Result</th>
                 <th className="text-right pb-2">P&L</th>
               </tr>
