@@ -65,15 +65,25 @@ function CountdownTimer({ entryTime, expirySecs, result }: {
   }
 }
 
+function toLocal(entryTime: string): Date {
+  const utcStr = entryTime.endsWith("Z") || entryTime.includes("+") ? entryTime : entryTime + "Z";
+  return new Date(utcStr);
+}
+
 function formatEntryTime(entryTime: string): string {
   try {
-    // Backend stores UTC — append Z if no timezone info present so JS parses as UTC
-    const utcStr = entryTime.endsWith("Z") || entryTime.includes("+") ? entryTime : entryTime + "Z";
-    const date = new Date(utcStr);
-    // format() uses local system timezone automatically
-    return format(date, "MM/dd h:mm:ss aa");
+    return format(toLocal(entryTime), "MM/dd h:mm:ss aa");
   } catch {
     return entryTime;
+  }
+}
+
+function formatExpiryTime(entryTime: string, expirySecs: number): string {
+  try {
+    const expiry = new Date(toLocal(entryTime).getTime() + expirySecs * 1000);
+    return format(expiry, "MM/dd h:mm:ss aa");
+  } catch {
+    return "—";
   }
 }
 
@@ -152,7 +162,8 @@ export default function TradeLog({ trades, showFilters = false, limit }: TradeLo
                 <th className="text-left pb-2 pr-4">Dir</th>
                 <th className="text-right pb-2 pr-4">Amount</th>
                 <th className="text-left pb-2 pr-4">Entry Time</th>
-                <th className="text-left pb-2 pr-4">Expires</th>
+                <th className="text-left pb-2 pr-4">Time Left</th>
+                <th className="text-left pb-2 pr-4">Expires At</th>
                 <th className="text-left pb-2 pr-4">Result</th>
                 <th className="text-right pb-2">P&L</th>
               </tr>
@@ -181,6 +192,9 @@ export default function TradeLog({ trades, showFilters = false, limit }: TradeLo
                       expirySecs={trade.expiry_seconds}
                       result={trade.result}
                     />
+                  </td>
+                  <td className="py-2.5 pr-4 text-xs text-muted font-mono">
+                    {trade.entry_time ? formatExpiryTime(trade.entry_time, trade.expiry_seconds) : "—"}
                   </td>
                   <td className="py-2.5 pr-4">{resultBadge(trade.result)}</td>
                   <td className={[
