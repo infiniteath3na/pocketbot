@@ -162,6 +162,7 @@ export default function TradeLog({ trades, showFilters = false, limit }: TradeLo
                 <th className="text-left pb-2 pr-4">Dir</th>
                 <th className="text-right pb-2 pr-4">Amount</th>
                 <th className="text-left pb-2 pr-4">Entry Time</th>
+                <th className="text-left pb-2 pr-4">Expiry</th>
                 <th className="text-left pb-2 pr-4">Time Left</th>
                 <th className="text-left pb-2 pr-4">Expires At</th>
                 <th className="text-left pb-2 pr-4">Result</th>
@@ -185,6 +186,11 @@ export default function TradeLog({ trades, showFilters = false, limit }: TradeLo
                   </td>
                   <td className="py-2.5 pr-4 text-xs text-muted font-mono">
                     {trade.entry_time ? formatEntryTime(trade.entry_time) : "—"}
+                  </td>
+                  <td className="py-2.5 pr-4 text-xs text-text-secondary font-mono font-semibold">
+                    {trade.expiry_seconds >= 60
+                      ? `${trade.expiry_seconds / 60}m`
+                      : `${trade.expiry_seconds}s`}
                   </td>
                   <td className="py-2.5 pr-4">
                     <CountdownTimer
