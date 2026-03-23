@@ -22,6 +22,7 @@ import {
   createReconnectingWebSocket,
 } from "@/lib/api";
 import AssetCard from "@/components/AssetCard";
+import BalanceDisplay from "@/components/BalanceDisplay";
 import BotControls from "@/components/BotControls";
 import TradeLog from "@/components/TradeLog";
 
@@ -182,6 +183,9 @@ export default function DashboardPage() {
           icon={BarChart3}
         />
       </div>
+
+      {/* Balance Display */}
+      <BalanceDisplay />
 
       {/* Asset Grid */}
       <div>

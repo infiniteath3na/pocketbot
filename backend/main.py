@@ -266,6 +266,36 @@ async def bot_status(db: Session = Depends(get_db)):
     }
 
 
+@app.get("/api/balance")
+async def get_balance(db: Session = Depends(get_db)):
+    """Get current balance for demo and live accounts."""
+    settings = _get_settings_dict(db)
+    mode = settings.get("mode", "demo")
+
+    demo_balance = None
+    live_balance = None
+
+    # Try to get balance from connected client
+    if trade_manager.pocket_client and trade_manager.pocket_client.connected:
+        if trade_manager.pocket_client.is_demo:
+            demo_balance = trade_manager.pocket_client.balance
+        else:
+            live_balance = trade_manager.pocket_client.balance
+
+    # Try to fetch demo balance if not connected
+    demo_ssid = os.getenv("POCKET_OPTION_DEMO_SSID", "")
+    live_ssid = os.getenv("POCKET_OPTION_LIVE_SSID", "")
+
+    return {
+        "demo_balance": demo_balance,
+        "live_balance": live_balance,
+        "active_mode": mode,
+        "demo_connected": bool(demo_ssid),
+        "live_connected": bool(live_ssid),
+        "last_updated": datetime.utcnow().isoformat(),
+    }
+
+
 @app.get("/api/backtest")
 async def backtest(
     asset: str = Query(..., description="Asset symbol e.g. EURUSD"),
