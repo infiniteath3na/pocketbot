@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
 import aiohttp
@@ -98,6 +99,24 @@ CRYPTO_BINANCE_SYMBOLS = {
     "LTCUSD": "LTCUSDT",
 }
 
+# OKX perpetual swap symbols
+CRYPTO_OKX_SYMBOLS = {
+    "BTCUSD": "BTC-USD-SWAP",
+    "ETHUSD": "ETH-USD-SWAP",
+    "SOLUSD": "SOL-USD-SWAP",
+    "XRPUSD": "XRP-USD-SWAP",
+    "LTCUSD": "LTC-USD-SWAP",
+}
+
+# Bybit linear perpetual symbols
+CRYPTO_BYBIT_SYMBOLS = {
+    "BTCUSD": "BTCUSDT",
+    "ETHUSD": "ETHUSDT",
+    "SOLUSD": "SOLUSDT",
+    "XRPUSD": "XRPUSDT",
+    "LTCUSD": "LTCUSDT",
+}
+
 # COT report market name keywords (CFTC disaggregated)
 COT_MARKET_KEYWORDS = {
     "XAUUSD": "GOLD",
@@ -163,6 +182,9 @@ CRYPTO_WEIGHTS = _normalize_weights({
 
 _cache: Dict[str, Tuple[float, Any]] = {}
 
+# Module-level econ calendar cache — shared across all assets to avoid per-asset 429s
+_econ_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
+
 
 def _cache_get(key: str) -> Optional[Any]:
     entry = _cache.get(key)
@@ -226,8 +248,8 @@ def _compute_rsi(closes: pd.Series, period: int = 14) -> float:
     delta = closes.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=period).mean().iloc[-1]
-    avg_loss = loss.rolling(window=period).mean().iloc[-1]
+    avg_gain = float(gain.rolling(window=period).mean().iloc[-1])
+    avg_loss = float(loss.rolling(window=period).mean().iloc[-1])
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
@@ -571,26 +593,29 @@ async def _fetch_cot_score(asset: str) -> float:
     if not keyword:
         return 50.0
 
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; PocketBot/1.0)"}
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://www.cftc.gov/dea/newcot/f_disagg.htm",
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=20),
-            ) as resp:
-                if resp.status != 200:
-                    raise ValueError(f"HTTP {resp.status}")
-                text = await resp.text(encoding="latin-1")
-
-        score = _parse_cot_csv(text, keyword)
-        _cache_set(cache_key, score, 7 * 24 * 3600)
-        return score
-    except Exception as e:
-        logger.warning(f"COT fetch failed for {asset}: {e}")
-        # Cache failure briefly to avoid hammering CFTC
-        _cache_set(cache_key, 50.0, 3600)
-        return 50.0
+    _COT_URLS = [
+        "https://raw.githubusercontent.com/datasets/cot-reports/main/data/futures-and-options-combined.csv",
+        "https://raw.githubusercontent.com/datasets/cot-reports/main/data/futures-only.csv",
+        "https://www.cftc.gov/dea/newcot/f_disagg.txt",
+    ]
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; PocketBot/1.0)"}
+    last_err: Exception = ValueError("no URLs tried")
+    async with aiohttp.ClientSession() as session:
+        for url in _COT_URLS:
+            try:
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    if resp.status != 200:
+                        raise ValueError(f"HTTP {resp.status}")
+                    text = await resp.text(encoding="latin-1")
+                score = _parse_cot_csv(text, keyword)
+                _cache_set(cache_key, score, 7 * 24 * 3600)
+                return score
+            except Exception as e:
+                last_err = e
+                logger.warning(f"COT URL {url} failed for {asset}: {e}")
+    logger.warning(f"All COT sources failed for {asset}: {last_err} — returning neutral 50.0")
+    _cache_set(cache_key, 50.0, 7 * 24 * 3600)
+    return 50.0
 
 
 def _cot_score_to_direction(score: float) -> Tuple[float, str]:
@@ -610,23 +635,40 @@ async def _fetch_funding_rate(asset: str) -> float:
     if cached is not None:
         return cached
 
-    binance_sym = CRYPTO_BINANCE_SYMBOLS.get(asset)
-    if not binance_sym:
+    if asset not in CRYPTO_OKX_SYMBOLS:
         return 0.0
 
-    try:
-        url = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={binance_sym}&limit=1"
-        async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession() as session:
+        # Try OKX first
+        try:
+            okx_sym = CRYPTO_OKX_SYMBOLS[asset]
+            url = f"https://www.okx.com/api/v5/public/funding-rate?instId={okx_sym}"
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
-                    raise ValueError(f"HTTP {resp.status}")
+                    raise ValueError(f"OKX HTTP {resp.status}")
                 data = await resp.json()
-        rate = float(data[0]["fundingRate"])
-        _cache_set(cache_key, rate, 300)  # 5 min TTL
-        return rate
-    except Exception as e:
-        logger.warning(f"Funding rate fetch failed for {asset}: {e}")
-        return 0.0
+            rate = float(data["data"][0]["fundingRate"])
+            _cache_set(cache_key, rate, 300)
+            return rate
+        except Exception as e:
+            logger.warning(f"OKX funding rate failed for {asset}: {e}")
+
+        # Try Bybit
+        try:
+            bybit_sym = CRYPTO_BYBIT_SYMBOLS[asset]
+            url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={bybit_sym}"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    raise ValueError(f"Bybit HTTP {resp.status}")
+                data = await resp.json()
+            rate = float(data["result"]["list"][0]["fundingRate"])
+            _cache_set(cache_key, rate, 300)
+            return rate
+        except Exception as e:
+            logger.warning(f"Bybit funding rate failed for {asset}: {e}")
+
+    logger.warning(f"All funding rate sources failed for {asset} — returning neutral 0.0")
+    return 0.0
 
 
 def _funding_rate_score(rate: float) -> Tuple[float, str]:
@@ -743,7 +785,7 @@ async def _fetch_news_sentiment(asset: str) -> float:
         return 50.0
 
     try:
-        url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+        url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote(ticker, safe='')}&region=US&lang=en-US"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
@@ -789,23 +831,37 @@ def _news_sentiment_score(norm: float) -> Tuple[float, str]:
 
 async def _fetch_econ_calendar() -> Tuple[bool, Optional[str]]:
     """
-    Fetch Forex Factory economic calendar and check for HIGH impact events within 30 minutes.
+    Fetch economic calendar and check for HIGH impact events within 30 minutes.
     Returns (gate_active, reason_string).
-    Cached 1 hour.
+    Cached 2 hours via module-level _econ_cache (shared across all assets to avoid 429s).
     """
-    cached = _cache_get("econ_calendar")
-    if cached is not None:
-        return cached
+    now_mono = time.monotonic()
+    if _econ_cache["data"] is not None and now_mono - _econ_cache["ts"] < 7200:
+        return _econ_cache["data"]
+
+    # Set placeholder immediately (before any await) so concurrent coroutines skip the fetch
+    _econ_cache["data"] = (False, None)
+    _econ_cache["ts"] = now_mono
+
+    _ECON_URLS = [
+        "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+    ]
 
     try:
+        events = None
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status != 200:
-                    raise ValueError(f"HTTP {resp.status}")
-                events = await resp.json(content_type=None)
+            for url in _ECON_URLS:
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status != 200:
+                            raise ValueError(f"HTTP {resp.status}")
+                        events = await resp.json(content_type=None)
+                    break
+                except Exception as e:
+                    logger.warning(f"Econ calendar URL {url} failed: {e}")
+
+        if events is None:
+            raise ValueError("All econ calendar sources failed")
 
         now = datetime.now(timezone.utc)
         high_soon = []
@@ -817,7 +873,6 @@ async def _fetch_econ_calendar() -> Tuple[bool, Optional[str]]:
             if not date_str:
                 continue
             try:
-                # Format: "2026-03-22T13:30:00-0500" or similar
                 ev_time = datetime.fromisoformat(date_str)
                 if ev_time.tzinfo is None:
                     ev_time = ev_time.replace(tzinfo=timezone.utc)
@@ -829,17 +884,17 @@ async def _fetch_econ_calendar() -> Tuple[bool, Optional[str]]:
 
         if high_soon:
             reason = f"HIGH impact event(s) within 30min: {', '.join(high_soon[:3])}"
-            result = (True, reason)
+            result: Tuple[bool, Optional[str]] = (True, reason)
         else:
             result = (False, None)
 
-        _cache_set("econ_calendar", result, 3600)
+        _econ_cache["data"] = result
+        _econ_cache["ts"] = time.monotonic()
         return result
     except Exception as e:
         logger.warning(f"Econ calendar fetch failed: {e}")
-        result = (False, None)
-        _cache_set("econ_calendar", result, 3600)
-        return result
+        # Leave placeholder so we don't retry for another 2 hours
+        return (False, None)
 
 
 async def _fetch_vix() -> float:

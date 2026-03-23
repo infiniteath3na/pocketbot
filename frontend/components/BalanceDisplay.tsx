@@ -30,7 +30,7 @@ export default function BalanceDisplay() {
 
   useEffect(() => {
     fetchBalance();
-    const interval = setInterval(fetchBalance, 15000); // refresh every 15s
+    const interval = setInterval(fetchBalance, 30000); // refresh every 30s
     return () => clearInterval(interval);
   }, []);
 

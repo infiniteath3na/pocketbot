@@ -272,19 +272,50 @@ async def get_balance(db: Session = Depends(get_db)):
     settings = _get_settings_dict(db)
     mode = settings.get("mode", "demo")
 
+    demo_ssid = os.getenv("POCKET_OPTION_DEMO_SSID", "")
+    live_ssid = os.getenv("POCKET_OPTION_LIVE_SSID", "")
+
     demo_balance = None
     live_balance = None
 
-    # Try to get balance from connected client
+    # If trade manager is connected, use its balance
     if trade_manager.pocket_client and trade_manager.pocket_client.connected:
         if trade_manager.pocket_client.is_demo:
             demo_balance = trade_manager.pocket_client.balance
         else:
             live_balance = trade_manager.pocket_client.balance
 
-    # Try to fetch demo balance if not connected
-    demo_ssid = os.getenv("POCKET_OPTION_DEMO_SSID", "")
-    live_ssid = os.getenv("POCKET_OPTION_LIVE_SSID", "")
+    # If demo balance still unknown, fetch it with a quick temp connection
+    if demo_balance is None and demo_ssid:
+        try:
+            from pocket_api import PocketOptionClient
+            temp_client = PocketOptionClient()
+            connected = await asyncio.wait_for(
+                temp_client.connect(demo_ssid, is_demo=True),
+                timeout=8.0
+            )
+            if connected:
+                await asyncio.sleep(1.5)  # wait for balance update message
+                demo_balance = temp_client.balance
+                await temp_client.disconnect()
+        except Exception as e:
+            logger.warning(f"Could not fetch demo balance: {e}")
+
+    # If live balance still unknown, fetch it with a quick temp connection
+    if live_balance is None and live_ssid:
+        try:
+            from pocket_api import PocketOptionClient
+            temp_client = PocketOptionClient()
+            connected = await asyncio.wait_for(
+                temp_client.connect(live_ssid, is_demo=False),
+                timeout=8.0
+            )
+            if connected:
+                await asyncio.sleep(1.5)
+                live_balance = temp_client.balance
+                await temp_client.disconnect()
+        except Exception as e:
+            logger.warning(f"Could not fetch live balance: {e}")
 
     return {
         "demo_balance": demo_balance,
