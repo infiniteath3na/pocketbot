@@ -36,7 +36,8 @@ function CountdownTimer({ entryTime, expirySecs, result }: {
   }
 
   try {
-    const entry = new Date(entryTime).getTime();
+    const utcStr = entryTime.endsWith("Z") || entryTime.includes("+") ? entryTime : entryTime + "Z";
+    const entry = new Date(utcStr).getTime();
     const expiry = entry + expirySecs * 1000;
     const remaining = Math.max(0, Math.floor((expiry - now) / 1000));
 
@@ -66,9 +67,11 @@ function CountdownTimer({ entryTime, expirySecs, result }: {
 
 function formatEntryTime(entryTime: string): string {
   try {
-    const date = new Date(entryTime);
-    // Format in user's local timezone
-    return format(date, "MM/dd HH:mm:ss");
+    // Backend stores UTC — append Z if no timezone info present so JS parses as UTC
+    const utcStr = entryTime.endsWith("Z") || entryTime.includes("+") ? entryTime : entryTime + "Z";
+    const date = new Date(utcStr);
+    // format() uses local system timezone automatically
+    return format(date, "MM/dd h:mm:ss aa");
   } catch {
     return entryTime;
   }
