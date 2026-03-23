@@ -429,11 +429,37 @@ def _candlestick_score(df: pd.DataFrame) -> Tuple[float, str]:
         return 40.0, "PUT"
 
 
-def _determine_expiry(confidence: float) -> str:
-    if confidence >= 80:
+def _determine_expiry(confidence: float, volatility: str = "normal") -> str:
+    """
+    Map confidence score to optimal expiry duration.
+    
+    Full duration range: 5s, 10s, 15s, 30s, 1min, 2min, 3min, 5min, 10min, 15min
+    
+    Logic:
+    - Very high confidence (>=90): short duration (5s-30s) — signal is strong, get in/out fast
+    - High confidence (>=80): medium-short (1min-2min)
+    - Good confidence (>=70): medium (3min-5min)
+    - Moderate (>=60): longer (10min)
+    - Lower confidence: max duration (15min) — wait for bigger move
+    """
+    if confidence >= 92:
+        return "5s"
+    elif confidence >= 88:
+        return "10s"
+    elif confidence >= 85:
+        return "15s"
+    elif confidence >= 82:
+        return "30s"
+    elif confidence >= 78:
         return "1min"
+    elif confidence >= 74:
+        return "2min"
+    elif confidence >= 70:
+        return "3min"
     elif confidence >= 65:
         return "5min"
+    elif confidence >= 55:
+        return "10min"
     else:
         return "15min"
 

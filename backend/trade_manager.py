@@ -158,7 +158,18 @@ class TradeManager:
             trade_size = 10.0
 
         is_demo = settings.get("mode", "demo") == "demo"
-        expiry_map = {"1min": 60, "5min": 300, "15min": 900}
+        expiry_map = {
+            "5s": 5,
+            "10s": 10,
+            "15s": 15,
+            "30s": 30,
+            "1min": 60,
+            "2min": 120,
+            "3min": 180,
+            "5min": 300,
+            "10min": 600,
+            "15min": 900,
+        }
         expiry_seconds = expiry_map.get(result.expiry, 60)
 
         db = self._get_db()
